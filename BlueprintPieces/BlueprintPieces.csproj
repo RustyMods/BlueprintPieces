@@ -113,6 +113,7 @@
     <ItemGroup>
         <Compile Include="Managers\Blueprints.cs" />
         <Compile Include="Managers\PieceTablePatches.cs" />
+        <Compile Include="Managers\WearNTearPatches.cs" />
         <Compile Include="Plugin.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
         <Compile Include="VersionHandshake.cs" />
@@ -134,7 +135,7 @@
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.18.2" />
-        <PackageReference Include="YamlDotNet" Version="13.1.0" />
+        <PackageReference Include="YamlDotNet" Version="15.1.6" />
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
     <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

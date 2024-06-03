@@ -5,18 +5,6 @@ namespace BlueprintPieces.Managers;
 
 public static class PieceTablePatches
 {
-    [HarmonyPatch(typeof(PieceTable), nameof(PieceTable.GetSelectedPrefab))]
-    private static class PieceTable_GetSelectedPrefab_Postfix
-    {
-        private static void Postfix(ref GameObject __result)
-        {
-            if (!Blueprints.HasSelectedBlueprint()) return;
-            Blueprints.Blueprint? blueprint = Blueprints.GetSelectedBlueprint();
-            if (blueprint == null) return;
-            __result = blueprint.m_ghost;
-        }
-    }
-
     [HarmonyPatch(typeof(PieceTable), nameof(PieceTable.GetSelectedPiece))]
     private static class PieceTable_GetSelectedPiece
     {

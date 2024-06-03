@@ -25,7 +25,7 @@ namespace BlueprintPieces
         internal static string ConnectionError = "";
         private readonly Harmony _harmony = new(ModGUID);
         public static readonly ManualLogSource BlueprintPiecesLogger = BepInEx.Logging.Logger.CreateLogSource(ModName);
-        private static readonly ConfigSync ConfigSync = new(ModGUID) { DisplayName = ModName, CurrentVersion = ModVersion, MinimumRequiredVersion = ModVersion };
+        public static readonly ConfigSync ConfigSync = new(ModGUID) { DisplayName = ModName, CurrentVersion = ModVersion, MinimumRequiredVersion = ModVersion };
         public enum Toggle { On = 1, Off = 0 }
 
         public static BlueprintPiecesPlugin _Plugin = null!;
@@ -39,7 +39,9 @@ namespace BlueprintPieces
             DontDestroyOnLoad(_Root);
             
             Blueprints.ReadFiles();
-            
+            Blueprints.SetupServerSync();
+            Blueprints.SetupFileWatch();
+
             InitConfigs();
             
             Assembly assembly = Assembly.GetExecutingAssembly();
@@ -91,6 +93,8 @@ namespace BlueprintPieces
 
         private static ConfigEntry<Toggle> _serverConfigLocked = null!;
         public static ConfigEntry<Toggle> _UseGhostMaterial = null!;
+        public static ConfigEntry<Toggle> _SlowBuild = null!;
+        public static ConfigEntry<float> _SlowBuildRate = null!;
 
         private void InitConfigs()
         {
@@ -100,6 +104,11 @@ namespace BlueprintPieces
 
             _UseGhostMaterial = config("2 - Settings", "Use Ghost Material", Toggle.Off,
                 "If on, placement ghost will use ghost material");
+
+            _SlowBuild = config("2 - Settings", "Slow Build", Toggle.On, "If on, blueprints will build piece by piece");
+            _SlowBuildRate = config("2 - Settings", "Build Rate", 0.5f,
+                new ConfigDescription("Set the build rate of the slow build feature",
+                    new AcceptableValueRange<float>(0.1f, 2f)));
         }
 
         public ConfigEntry<T> config<T>(string group, string name, T value, ConfigDescription description,

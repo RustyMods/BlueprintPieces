@@ -1,38 +1,74 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
+using ServerSync;
 using UnityEngine;
 using UnityEngine.Rendering;
+using YamlDotNet.Serialization;
+using Object = UnityEngine.Object;
 
 namespace BlueprintPieces.Managers;
 
 public static class Blueprints
 {
+    private static readonly CustomSyncedValue<string> m_serverSync = new(BlueprintPiecesPlugin.ConfigSync, "BlueprintPieces_ServerData", "");
     private static readonly string m_folderPath = Paths.ConfigPath + Path.DirectorySeparatorChar + "BlueprintPieces";
     public static readonly Material m_ghostMaterial = BlueprintPiecesPlugin._AssetBundle.LoadAsset<Material>("GhostMaterial");
-    private static GameObject m_crate = null!;
+    private static readonly GameObject m_crate = BlueprintPiecesPlugin._AssetBundle.LoadAsset<GameObject>("Blueprint_Crate");
 
     private static readonly List<Blueprint> m_blueprints = new();
+    private static readonly Dictionary<string, string[]> m_files = new();
     private static Blueprint? m_selectedBlueprint;
-    
-    public static bool HasSelectedBlueprint() => m_selectedBlueprint != null;
-    public static Blueprint? GetSelectedBlueprint() => m_selectedBlueprint;
 
+    private static bool m_building;
+    public static bool IsBuilding() => m_building;
+    public static Blueprint? GetSelectedBlueprint() => m_selectedBlueprint;
     public static void PlaceBlueprint(GameObject ghost, Player player)
     {
         if (ghost == null) return;
-        foreach (Transform child in ghost.transform)
+        if (BlueprintPiecesPlugin._SlowBuild.Value is BlueprintPiecesPlugin.Toggle.On)
         {
-            GameObject prefab = ZNetScene.instance.GetPrefab(child.name.Replace("(Clone)", string.Empty).Trim());
-            GameObject place = Object.Instantiate(prefab, child.position, child.rotation);
-            if (!place.TryGetComponent(out Piece component)) continue;
-            component.m_creator = player.GetPlayerID();
+            List<PlanPiece> pieces = (from Transform child in ghost.transform select new PlanPiece()
+            {
+                m_prefab = child.name.Replace("(Clone)", string.Empty).Trim(), m_coordinates = child.position, m_rotation = child.rotation,
+            }).ToList();
+
+            BlueprintPiecesPlugin._Plugin.StartCoroutine(StartBuild(player, pieces));
+        }
+        else
+        {
+            foreach (Transform child in ghost.transform)
+            {
+                GameObject prefab = ZNetScene.instance.GetPrefab(child.name.Replace("(Clone)", string.Empty).Trim());
+                GameObject place = Object.Instantiate(prefab, child.position, child.rotation);
+                if (!place.TryGetComponent(out Piece component)) continue;
+                component.m_creator = player.GetPlayerID();
+                component.m_placeEffect.Create(child.position, child.rotation, place.transform);
+            }
         }
     }
-    
+
+    private static IEnumerator StartBuild(Player player, List<PlanPiece> pieces)
+    {
+        m_building = true;
+        foreach (PlanPiece piece in pieces.OrderBy(x => x.m_coordinates.y))
+        {
+            GameObject prefab = ZNetScene.instance.GetPrefab(piece.m_prefab);
+            if (!prefab) continue;
+            GameObject clone = Object.Instantiate(prefab, piece.m_coordinates, piece.m_rotation);
+            if (!clone.TryGetComponent(out Piece component)) continue;
+            component.m_creator = player.GetPlayerID();
+            component.m_placeEffect.Create(piece.m_coordinates, piece.m_rotation, clone.transform);
+            yield return new WaitForSeconds(BlueprintPiecesPlugin._SlowBuildRate.Value);
+        }
+        m_building = false;
+    }
+
     public static void Deselect() => m_selectedBlueprint = null;
 
     [HarmonyPatch(typeof(ObjectDB), nameof(ObjectDB.Awake))]
@@ -41,13 +77,8 @@ public static class Blueprints
         private static void Postfix(ObjectDB __instance)
         {
             if (!__instance || !ZNetScene.instance) return;
-            GameObject hammer = ZNetScene.instance.GetPrefab("Hammer");
-            if (!hammer) return;
-            if (!hammer.TryGetComponent(out ItemDrop component)) return;
-
-            m_crate = Object.Instantiate(BlueprintPiecesPlugin._AssetBundle.LoadAsset<GameObject>("Blueprint_Crate"), BlueprintPiecesPlugin._Root.transform, false);
-            
-            RegisterBlueprints(component.m_itemData.m_shared.m_buildPieces, component.m_itemData.GetIcon());
+            RegisterBlueprints();
+            UpdateServer();
         }
     }
 
@@ -109,8 +140,13 @@ public static class Blueprints
         component.gameObject.name = crate.name;
         component.name = crate.name;
         component.enabled = true;
-        component.m_itemData.m_shared.m_name = name + " crate";
-        component.m_itemData.m_shared.m_description = "Resource for the blueprint: " + name;
+
+        var itemNameConfig = BlueprintPiecesPlugin._Plugin.config(name, "Crate Name", name + " crate",
+            "Set the display name for the build crate");
+        component.m_itemData.m_shared.m_name = itemNameConfig.Value;
+        itemNameConfig.SettingChanged += (sender, args) => component.m_itemData.m_shared.m_name = itemNameConfig.Value;
+        
+        component.m_itemData.m_shared.m_description = "Resource for the blueprint: " + name + "\n";
         component.m_itemData.m_dropPrefab = crate;
 
         Recipe recipe = ScriptableObject.CreateInstance<Recipe>();
@@ -185,7 +221,16 @@ public static class Blueprints
                 }
             }
         }
-        
+
+        StringBuilder stringBuilder = new StringBuilder();
+        foreach (var resource in requirements.Values)
+        {
+            string item = resource.m_resItem.m_itemData.m_shared.m_name;
+            int amount = resource.m_amount;
+            stringBuilder.Append($"{item} <color=orange>x{amount}</color>\n");
+        }
+
+        component.m_itemData.m_shared.m_description += Localization.instance.Localize(stringBuilder.ToString());
         recipe.m_resources = requirements.Values.ToArray();
         
         RegisterRecipe(recipe);
@@ -208,36 +253,111 @@ public static class Blueprints
             ObjectDB.instance.m_recipes.Add(recipe);
     }
 
-    private static void RegisterBlueprints(PieceTable table, Sprite icon)
+    private static void RegisterBlueprints()
     {
         ZNetScene instance = ZNetScene.instance;
         if (!instance) return;
-        GameObject artisanTable = instance.GetPrefab("piece_artisanstation");
-        if (!artisanTable) return;
-        if (!artisanTable.TryGetComponent(out Piece artisanPiece)) return;
-        if (!artisanTable.TryGetComponent(out CraftingStation craftingStation)) return;
-        EffectList placeEffects = artisanPiece.m_placeEffect;
+
+        GetAssets(instance, out CraftingStation craftingStation, out EffectList placeEffects, out PieceTable table, out Sprite icon);
         
         foreach (Blueprint blueprint in m_blueprints)
         {
-            GameObject prefab = Object.Instantiate(new GameObject("mock"), BlueprintPiecesPlugin._Root.transform, false);
-            prefab.name = blueprint.m_name;
-            string name = blueprint.m_name.Replace("blueprint_", string.Empty);
-
-            AddZNetView(prefab);
-            
-            prefab.AddComponent<Transform>();
-            
-            AddPiece(prefab, blueprint, placeEffects, icon, name, craftingStation, instance);
-            
-            blueprint.m_ghost = prefab;
-            
-            GhostBlueprint ghost = prefab.AddComponent<GhostBlueprint>();
-            ghost.m_blueprint = blueprint;
-            
-            table.m_pieces.Add(prefab);
-            RegisterToZNetScene(prefab);
+            RegisterBlueprint(blueprint, placeEffects, icon, craftingStation, instance, table);
         }
+    }
+
+    private static void GetAssets(ZNetScene instance, out CraftingStation craftingStation, out EffectList placeEffects,
+        out PieceTable table, out Sprite icon)
+    {
+        craftingStation = null!;
+        placeEffects = null!;
+        table = null!;
+        icon = null!;
+        
+        GameObject hammer = ZNetScene.instance.GetPrefab("Hammer");
+        if (!hammer.TryGetComponent(out ItemDrop component)) return;
+        table = component.m_itemData.m_shared.m_buildPieces;
+        icon = component.m_itemData.GetIcon();
+        
+        GameObject artisanTable = instance.GetPrefab("piece_artisanstation");
+        if (!artisanTable) return;
+        if (!artisanTable.TryGetComponent(out Piece artisanPiece)) return;
+        if (!artisanTable.TryGetComponent(out CraftingStation station)) return;
+        placeEffects = artisanPiece.m_placeEffect;
+        craftingStation = station;
+    }
+
+    private static void RegisterBlueprint(Blueprint blueprint, EffectList placeEffects, Sprite icon, CraftingStation craftingStation, ZNetScene instance, PieceTable table)
+    {
+        if (instance.GetPrefab(blueprint.m_name))
+        {
+            blueprint.m_registered = true;
+            return;
+        }
+        
+        GameObject prefab = Object.Instantiate(new GameObject("mock"), BlueprintPiecesPlugin._Root.transform, false);
+        prefab.name = blueprint.m_name;
+        string name = blueprint.m_name.Replace("blueprint_", string.Empty);
+
+        AddZNetView(prefab);
+            
+        prefab.AddComponent<Transform>();
+            
+        AddPiece(prefab, blueprint, placeEffects, icon, name, craftingStation, instance);
+            
+        blueprint.m_ghost = prefab;
+            
+        GhostBlueprint ghost = prefab.AddComponent<GhostBlueprint>();
+        ghost.m_blueprint = blueprint;
+            
+        table.m_pieces.Add(prefab);
+        RegisterToZNetScene(prefab);
+
+        blueprint.m_registered = true;
+    }
+
+    private static void UpdateServer()
+    {
+        if (!ZNet.instance) return;
+        if (!ZNet.instance.IsServer()) return;
+        var serializer = new SerializerBuilder().Build();
+        var data = serializer.Serialize(m_files);
+        m_serverSync.Value = data;
+        BlueprintPiecesPlugin.BlueprintPiecesLogger.LogDebug("Server: Updated server blueprints");
+    }
+
+    public static void SetupServerSync()
+    {
+        m_serverSync.ValueChanged += () =>
+        {
+            if (!ZNet.instance) return;
+            if (ZNet.instance.IsServer()) return;
+            if (m_serverSync.Value.IsNullOrWhiteSpace()) return;
+            BlueprintPiecesPlugin.BlueprintPiecesLogger.LogDebug("Client: Received blueprints from server");
+            var deserializer = new DeserializerBuilder().Build();
+            var files = deserializer.Deserialize<Dictionary<string, string[]>>(m_serverSync.Value);
+            m_blueprints.Clear();
+            foreach (var kvp in files)
+            {
+                var blueprint = ParseFile(kvp.Value, kvp.Key);
+                m_blueprints.Add(blueprint);
+            }
+            RegisterBlueprints();
+        };
+    }
+
+    public static void SetupFileWatch()
+    {
+        FileSystemWatcher watcher = new FileSystemWatcher(m_folderPath, "*.blueprint");
+        watcher.EnableRaisingEvents = true;
+        watcher.SynchronizingObject = ThreadingHelper.SynchronizingObject;
+        watcher.IncludeSubdirectories = true;
+        watcher.Created += (sender, args) =>
+        {
+            BlueprintPiecesPlugin.BlueprintPiecesLogger.LogDebug("Blueprint created, registering");
+            ReadFile(args.FullPath);
+            UpdateServer();
+        };
     }
 
     private static void RegisterToZNetScene(GameObject prefab)
@@ -266,20 +386,23 @@ public static class Blueprints
     {
         if (!Directory.Exists(m_folderPath)) Directory.CreateDirectory(m_folderPath);
         string[] files = Directory.GetFiles(m_folderPath, "*.blueprint");
-        foreach (var file in files)
+        foreach (var file in files) ReadFile(file);
+    }
+
+    private static void ReadFile(string file)
+    {
+        try
         {
-            try
-            {
-                string[] texts = File.ReadAllLines(file);
-                string fileName = Path.GetFileName(file);
-                Blueprint blueprint = ParseFile(texts, fileName);
-                m_blueprints.Add(blueprint);
-            }
-            catch
-            {
-                BlueprintPiecesPlugin.BlueprintPiecesLogger.LogWarning("Failed to parse file:");
-                BlueprintPiecesPlugin.BlueprintPiecesLogger.LogInfo(file);
-            }
+            string[] texts = File.ReadAllLines(file);
+            string fileName = Path.GetFileName(file);
+            Blueprint blueprint = ParseFile(texts, fileName);
+            m_blueprints.Add(blueprint);
+            m_files[fileName] = texts;
+        }
+        catch
+        {
+            BlueprintPiecesPlugin.BlueprintPiecesLogger.LogWarning("Failed to parse file:");
+            BlueprintPiecesPlugin.BlueprintPiecesLogger.LogInfo(file);
         }
     }
 
@@ -357,15 +480,13 @@ public static class Blueprints
         PlanPiece planPiece = new();
         string[] data = text.Split(';');
         
-        string prefab = data[0];
-        string category = data[1];
+        planPiece.m_category = data[1];
         string unknown = data[9];
-        string center = $"{data[10]}:{data[11]}:{data[12]}";
-        
-        planPiece.m_prefab = prefab;
+
+        planPiece.m_prefab = data[0];
         planPiece.m_coordinates = ParsePieceVector3(data[2], data[3], data[4]) ?? new();
         planPiece.m_rotation = ParsePieceRotation(data[5], data[6], data[7], data[8]) ?? new();
-        planPiece.m_center = center;
+        planPiece.m_center = $"{data[10]}:{data[11]}:{data[12]}";
 
         try
         {
@@ -408,7 +529,6 @@ public static class Blueprints
         return new Vector3(x, y, z);
     }
     
-
     public class Blueprint
     {
         public string m_name = null!;
@@ -420,12 +540,14 @@ public static class Blueprints
         public readonly List<PlanPiece> m_objects = new();
         public readonly List<SnapPoint> m_snapPoints = new();
         public GameObject m_ghost = new();
+        public bool m_registered;
         public void Select() => m_selectedBlueprint = this;
     }
 
     public class PlanPiece
     {
         public string m_prefab = "";
+        public string m_category = "";
         public Vector3 m_coordinates = Vector3.zero;
         public Quaternion m_rotation = Quaternion.identity;
         public string m_center = "";
