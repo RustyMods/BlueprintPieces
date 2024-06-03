@@ -13,6 +13,7 @@ public static class Blueprints
 {
     private static readonly string m_folderPath = Paths.ConfigPath + Path.DirectorySeparatorChar + "BlueprintPieces";
     public static readonly Material m_ghostMaterial = BlueprintPiecesPlugin._AssetBundle.LoadAsset<Material>("GhostMaterial");
+    private static GameObject m_crate = null!;
 
     private static readonly List<Blueprint> m_blueprints = new();
     private static Blueprint? m_selectedBlueprint;
@@ -34,18 +35,177 @@ public static class Blueprints
     
     public static void Deselect() => m_selectedBlueprint = null;
 
-    [HarmonyPatch(typeof(ZNetScene), nameof(ZNetScene.Awake))]
+    [HarmonyPatch(typeof(ObjectDB), nameof(ObjectDB.Awake))]
     private static class Register_Blueprints
     {
-        private static void Postfix(ZNetScene __instance)
+        private static void Postfix(ObjectDB __instance)
         {
-            if (!__instance) return;
-            GameObject hammer = __instance.GetPrefab("Hammer");
+            if (!__instance || !ZNetScene.instance) return;
+            GameObject hammer = ZNetScene.instance.GetPrefab("Hammer");
             if (!hammer) return;
             if (!hammer.TryGetComponent(out ItemDrop component)) return;
+
+            m_crate = Object.Instantiate(BlueprintPiecesPlugin._AssetBundle.LoadAsset<GameObject>("Blueprint_Crate"), BlueprintPiecesPlugin._Root.transform, false);
             
             RegisterBlueprints(component.m_itemData.m_shared.m_buildPieces, component.m_itemData.GetIcon());
         }
+    }
+
+    private static void AddZNetView(GameObject prefab)
+    {
+        ZNetView znv = prefab.AddComponent<ZNetView>();
+        znv.m_persistent = false;
+    }
+
+    private static void AddPiece(GameObject prefab, Blueprint blueprint, EffectList placeEffects, 
+        Sprite icon, string name, CraftingStation artisanStation, ZNetScene instance)
+    {
+        Piece piece = prefab.AddComponent<Piece>();
+        piece.enabled = true;
+
+        ConfigEntry<string> nameConfig =
+            BlueprintPiecesPlugin._Plugin.config(name, "DisplayName", name,
+                "Set the display name for the blueprint");
+        nameConfig.SettingChanged += (sender, args) => piece.m_name = nameConfig.Value;
+        piece.m_name = nameConfig.Value;
+        piece.m_description = $"<color=orange>Blueprint created by {blueprint.m_creator}</color>\n{blueprint.m_description}";
+        piece.m_icon = icon;
+        piece.m_placeEffect = placeEffects;
+        
+        ConfigEntry<string> stationConfig = BlueprintPiecesPlugin._Plugin.config(name, "Crafting Station", artisanStation.name,
+            "Set the crafting station, if invalid, defaults to artisan table");
+        stationConfig.SettingChanged += (sender, args) =>
+        {
+            GameObject CraftTable = instance.GetPrefab(stationConfig.Value);
+            if (!CraftTable) return;
+            piece.m_craftingStation = !CraftTable.TryGetComponent(out CraftingStation CraftComponent) ? artisanStation : CraftComponent;
+        };
+        GameObject CraftingTable = instance.GetPrefab(stationConfig.Value);
+        if (!CraftingTable)
+        {
+            piece.m_craftingStation = artisanStation;
+        }
+        else
+        {
+            piece.m_craftingStation = !CraftingTable.TryGetComponent(out CraftingStation StationComponent)
+                ? StationComponent
+                : artisanStation;
+        }
+
+        ConfigEntry<Piece.PieceCategory> categoryConfig =
+            BlueprintPiecesPlugin._Plugin.config(name, "Category", Piece.PieceCategory.Misc, "Set category of piece");
+        piece.m_category = categoryConfig.Value;
+        categoryConfig.SettingChanged += (sender, args) => piece.m_category = categoryConfig.Value;
+
+        AddRecipe(piece, name, blueprint, artisanStation, instance);
+    }
+
+    private static void AddRecipe(Piece piece, string name, Blueprint blueprint, CraftingStation artisanStation, ZNetScene instance)
+    {
+        GameObject crate = Object.Instantiate(m_crate, BlueprintPiecesPlugin._Root.transform, false);
+        crate.name = name + "_crate";
+
+        if (!crate.TryGetComponent(out ItemDrop component)) return;
+        component.gameObject.name = crate.name;
+        component.name = crate.name;
+        component.enabled = true;
+        component.m_itemData.m_shared.m_name = name + " crate";
+        component.m_itemData.m_shared.m_description = "Resource for the blueprint: " + name;
+        component.m_itemData.m_dropPrefab = crate;
+
+        Recipe recipe = ScriptableObject.CreateInstance<Recipe>();
+        recipe.name = name + "_recipe";
+        recipe.m_item = component;
+        recipe.m_amount = 1;
+        recipe.m_enabled = true;
+        ConfigEntry<string> stationConfig = BlueprintPiecesPlugin._Plugin.config(name, "Recipe Station", artisanStation.name,
+            "Set the station to craft the resource crate");
+        stationConfig.SettingChanged += (sender, args) =>
+        {
+            GameObject CraftTable = instance.GetPrefab(stationConfig.Value);
+            if (!CraftTable) return;
+            if (!CraftTable.TryGetComponent(out CraftingStation CraftComponent))
+            {
+                recipe.m_craftingStation = artisanStation;
+                recipe.m_repairStation = artisanStation;
+            }
+            else
+            {
+                recipe.m_craftingStation = CraftComponent;
+                recipe.m_repairStation = CraftComponent;
+            }
+        };
+        
+        GameObject CraftTable = instance.GetPrefab(stationConfig.Value);
+        if (!CraftTable)
+        {
+            recipe.m_craftingStation = artisanStation;
+            recipe.m_repairStation = artisanStation;
+        }
+        else
+        {
+            if (!CraftTable.TryGetComponent(out CraftingStation CraftStation))
+            {
+                recipe.m_craftingStation = artisanStation;
+                recipe.m_repairStation = artisanStation;
+            }
+            else
+            {
+                recipe.m_craftingStation = CraftStation;
+                recipe.m_repairStation = CraftStation;
+            }
+        }
+
+        ConfigEntry<int> stationLevel = BlueprintPiecesPlugin._Plugin.config(name, "Recipe Station Level", 1,
+            "Set the minimum station level required to access this recipe");
+        recipe.m_minStationLevel = stationLevel.Value;
+        stationLevel.SettingChanged += (sender, args) => recipe.m_minStationLevel = stationLevel.Value;
+
+        Dictionary<string, Piece.Requirement> requirements = new();
+        
+        foreach (PlanPiece obj in blueprint.m_objects)
+        {
+            GameObject planObject = instance.GetPrefab(obj.m_prefab);
+            if (!planObject) continue;
+            if (!planObject.TryGetComponent(out Piece objPiece)) continue;
+            
+            foreach (Piece.Requirement requirement in objPiece.m_resources)
+            {
+                if (requirements.TryGetValue(requirement.m_resItem.m_itemData.m_shared.m_name, out Piece.Requirement match))
+                {
+                    match.m_amount += requirement.m_amount;
+                }
+                else
+                {
+                    requirements[requirement.m_resItem.m_itemData.m_shared.m_name] = new Piece.Requirement
+                    {
+                        m_resItem = requirement.m_resItem,
+                        m_amount = requirement.m_amount
+                    };
+                }
+            }
+        }
+        
+        recipe.m_resources = requirements.Values.ToArray();
+        
+        RegisterRecipe(recipe);
+        RegisterToZNetScene(crate);
+        RegisterToObjectDB(crate);
+
+        piece.m_resources = new[]
+        {
+            new Piece.Requirement()
+            {
+                m_resItem = component,
+                m_amount = 1
+            }
+        };
+    }
+
+    private static void RegisterRecipe(Recipe recipe)
+    {
+        if (!ObjectDB.instance.m_recipes.Contains(recipe))
+            ObjectDB.instance.m_recipes.Add(recipe);
     }
 
     private static void RegisterBlueprints(PieceTable table, Sprite icon)
@@ -62,74 +222,15 @@ public static class Blueprints
         {
             GameObject prefab = Object.Instantiate(new GameObject("mock"), BlueprintPiecesPlugin._Root.transform, false);
             prefab.name = blueprint.m_name;
-            
-            ZNetView znv = prefab.AddComponent<ZNetView>();
-            znv.m_persistent = false;
+            string name = blueprint.m_name.Replace("blueprint_", string.Empty);
+
+            AddZNetView(prefab);
             
             prefab.AddComponent<Transform>();
-            Piece piece = prefab.AddComponent<Piece>();
-            piece.enabled = true;
-
-            string name = blueprint.m_name.Replace("blueprint_", string.Empty);
-            ConfigEntry<string> nameConfig =
-                BlueprintPiecesPlugin._Plugin.config(name, "DisplayName", name,
-                    "Set the display name for the blueprint");
-            nameConfig.SettingChanged += (sender, args) => piece.m_name = nameConfig.Value;
-            piece.m_name = nameConfig.Value;
-            piece.m_description = $"<color=orange>Blueprint created by {blueprint.m_creator}</color>\n{blueprint.m_description}";
-            piece.m_icon = icon;
-            piece.m_placeEffect = placeEffects;
-            Dictionary<ItemDrop, Piece.Requirement> requirements = new();
             
-            foreach (PlanPiece obj in blueprint.m_objects)
-            {
-                GameObject planObject = instance.GetPrefab(obj.m_prefab);
-                if (!planObject) continue;
-                if (!planObject.TryGetComponent(out Piece component)) continue;
-                
-                Piece.Requirement resource = new();
-                foreach (var requirement in component.m_resources)
-                {
-                    resource.m_resItem = requirement.m_resItem;
-                    resource.m_amount = requirement.m_amount;
-                    if (requirements.TryGetValue(requirement.m_resItem, out Piece.Requirement match))
-                    {
-                        match.m_amount += requirement.m_amount;
-                    }
-                    else
-                    {
-                        requirements[requirement.m_resItem] = resource;
-                    }
-                }
-            }
-            piece.m_resources = requirements.Values.ToArray();
-            ConfigEntry<string> stationConfig = BlueprintPiecesPlugin._Plugin.config(name, "Crafting Station", craftingStation.name,
-                "Set the crafting station, if invalid, defaults to artisan table");
-            stationConfig.SettingChanged += (sender, args) =>
-            {
-                GameObject CraftTable = instance.GetPrefab(stationConfig.Value);
-                if (!CraftTable) return;
-                piece.m_craftingStation = !CraftTable.TryGetComponent(out CraftingStation CraftComponent) ? craftingStation : CraftComponent;
-            };
-            GameObject CraftingTable = instance.GetPrefab(stationConfig.Value);
-            if (!CraftingTable)
-            {
-                piece.m_craftingStation = craftingStation;
-            }
-            else
-            {
-                piece.m_craftingStation = !CraftingTable.TryGetComponent(out CraftingStation StationComponent)
-                    ? StationComponent
-                    : craftingStation;
-            }
-
-            var categoryConfig =
-                BlueprintPiecesPlugin._Plugin.config(name, "Category", Piece.PieceCategory.Misc, "Set category of piece");
-            piece.m_category = categoryConfig.Value;
-            categoryConfig.SettingChanged += (sender, args) => piece.m_category = categoryConfig.Value;
+            AddPiece(prefab, blueprint, placeEffects, icon, name, craftingStation, instance);
             
             blueprint.m_ghost = prefab;
-            blueprint.m_resources = requirements.Values.ToList();
             
             GhostBlueprint ghost = prefab.AddComponent<GhostBlueprint>();
             ghost.m_blueprint = blueprint;
@@ -149,17 +250,36 @@ public static class Blueprints
 
         ZNetScene.instance.m_namedPrefabs[prefab.name.GetStableHashCode()] = prefab;
     }
-    
 
+    private static void RegisterToObjectDB(GameObject prefab)
+    {
+        if (!ObjectDB.instance) return;
+        if (!ObjectDB.instance.m_items.Contains(prefab))
+        {
+            ObjectDB.instance.m_items.Add(prefab);
+        }
+
+        ObjectDB.instance.m_itemByHash[prefab.name.GetStableHashCode()] = prefab;
+    }
+    
     public static void ReadFiles()
     {
         if (!Directory.Exists(m_folderPath)) Directory.CreateDirectory(m_folderPath);
         string[] files = Directory.GetFiles(m_folderPath, "*.blueprint");
         foreach (var file in files)
         {
-            string[] texts = File.ReadAllLines(file);
-            string fileName = Path.GetFileName(file);
-            m_blueprints.Add(ParseFile(texts, fileName));
+            try
+            {
+                string[] texts = File.ReadAllLines(file);
+                string fileName = Path.GetFileName(file);
+                Blueprint blueprint = ParseFile(texts, fileName);
+                m_blueprints.Add(blueprint);
+            }
+            catch
+            {
+                BlueprintPiecesPlugin.BlueprintPiecesLogger.LogWarning("Failed to parse file:");
+                BlueprintPiecesPlugin.BlueprintPiecesLogger.LogInfo(file);
+            }
         }
     }
 
@@ -238,15 +358,24 @@ public static class Blueprints
         string[] data = text.Split(';');
         
         string prefab = data[0];
+        string category = data[1];
+        string unknown = data[9];
         string center = $"{data[10]}:{data[11]}:{data[12]}";
-        string info = data[13];
         
         planPiece.m_prefab = prefab;
         planPiece.m_coordinates = ParsePieceVector3(data[2], data[3], data[4]) ?? new();
         planPiece.m_rotation = ParsePieceRotation(data[5], data[6], data[7], data[8]) ?? new();
         planPiece.m_center = center;
-        planPiece.m_data = info;
 
+        try
+        {
+            planPiece.m_data = data[13];
+        }
+        catch
+        {
+            planPiece.m_data = "";
+        }
+        
         return planPiece;
     }
 
@@ -291,7 +420,6 @@ public static class Blueprints
         public readonly List<PlanPiece> m_objects = new();
         public readonly List<SnapPoint> m_snapPoints = new();
         public GameObject m_ghost = new();
-        public List<Piece.Requirement> m_resources = new();
         public void Select() => m_selectedBlueprint = this;
     }
 
