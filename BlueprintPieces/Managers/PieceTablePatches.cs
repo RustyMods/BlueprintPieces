@@ -29,6 +29,22 @@ public static class PieceTablePatches
         {
             Blueprints.PlaceBlueprint(__instance.m_placementGhost, __instance);
             Blueprints.Deselect();
+            Blueprints.ResetStep();
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), nameof(Player.UpdatePlacementGhost))]
+    private static class Player_UpdateGhost_Postfix
+    {
+        private static void Postfix(Player __instance)
+        {
+            if (!__instance) return;
+            var ghost = __instance.m_placementGhost;
+            if (ghost == null) return;
+
+            if (!Blueprints.SelectedBlueprint()) return;
+            if (Blueprints.m_steps == Vector3.zero) return;
+            ghost.transform.position += Blueprints.m_steps;
         }
     }
     

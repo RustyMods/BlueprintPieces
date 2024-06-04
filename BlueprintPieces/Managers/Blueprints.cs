@@ -24,10 +24,16 @@ public static class Blueprints
     private static readonly List<Blueprint> m_blueprints = new();
     private static readonly Dictionary<string, string[]> m_files = new();
     private static Blueprint? m_selectedBlueprint;
+    
+    public static Vector3 m_steps = Vector3.zero;
 
     private static bool m_building;
     public static bool IsBuilding() => m_building;
+    public static bool SelectedBlueprint() => m_selectedBlueprint != null;
     public static Blueprint? GetSelectedBlueprint() => m_selectedBlueprint;
+    public static void StepUp() => m_steps.y += BlueprintPiecesPlugin._StepIncrement.Value;
+    public static void StepDown() => m_steps.y -= BlueprintPiecesPlugin._StepIncrement.Value;
+    public static void ResetStep() => m_steps = Vector3.zero;
     public static void PlaceBlueprint(GameObject ghost, Player player)
     {
         if (ghost == null) return;
@@ -52,7 +58,6 @@ public static class Blueprints
             }
         }
     }
-
     private static IEnumerator StartBuild(Player player, List<PlanPiece> pieces)
     {
         m_building = true;
@@ -68,7 +73,6 @@ public static class Blueprints
         }
         m_building = false;
     }
-
     public static void Deselect() => m_selectedBlueprint = null;
 
     [HarmonyPatch(typeof(ObjectDB), nameof(ObjectDB.Awake))]
@@ -81,13 +85,11 @@ public static class Blueprints
             UpdateServer();
         }
     }
-
     private static void AddZNetView(GameObject prefab)
     {
         ZNetView znv = prefab.AddComponent<ZNetView>();
         znv.m_persistent = false;
     }
-
     private static void AddPiece(GameObject prefab, Blueprint blueprint, EffectList placeEffects, 
         Sprite icon, string name, CraftingStation artisanStation, ZNetScene instance)
     {
@@ -141,7 +143,7 @@ public static class Blueprints
         component.name = crate.name;
         component.enabled = true;
 
-        var itemNameConfig = BlueprintPiecesPlugin._Plugin.config(name, "Crate Name", name + " crate",
+        ConfigEntry<string> itemNameConfig = BlueprintPiecesPlugin._Plugin.config(name, "Crate Name", name + " crate",
             "Set the display name for the build crate");
         component.m_itemData.m_shared.m_name = itemNameConfig.Value;
         itemNameConfig.SettingChanged += (sender, args) => component.m_itemData.m_shared.m_name = itemNameConfig.Value;
@@ -294,7 +296,8 @@ public static class Blueprints
             blueprint.m_registered = true;
             return;
         }
-        
+
+        if (blueprint.m_registered) return;
         GameObject prefab = Object.Instantiate(new GameObject("mock"), BlueprintPiecesPlugin._Root.transform, false);
         prefab.name = blueprint.m_name;
         string name = blueprint.m_name.Replace("blueprint_", string.Empty);
@@ -356,6 +359,7 @@ public static class Blueprints
         {
             BlueprintPiecesPlugin.BlueprintPiecesLogger.LogDebug("Blueprint created, registering");
             ReadFile(args.FullPath);
+            RegisterBlueprints();
             UpdateServer();
         };
     }
@@ -572,17 +576,12 @@ public class GhostBlueprint : MonoBehaviour
 {
     private static readonly int BumpMap = Shader.PropertyToID("_BumpMap");
     public Blueprints.Blueprint? m_blueprint { get; set; }
-    
-    public void Select()
-    {
-        m_blueprint?.Select();
-    }
+    public void Select() => m_blueprint?.Select();
 
     public void Awake()
     {
         SetupGhosts();
     }
-
     private void SetupGhosts()
     {
         if (m_blueprint == null)
@@ -598,8 +597,7 @@ public class GhostBlueprint : MonoBehaviour
             CreateGhostMaterials(ghost);
         }
     }
-
-    private void CreateGhostMaterials(GameObject prefab)
+    private static void CreateGhostMaterials(GameObject prefab)
     {
         if (BlueprintPiecesPlugin._UseGhostMaterial.Value is BlueprintPiecesPlugin.Toggle.Off) return;
 

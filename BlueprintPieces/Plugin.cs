@@ -49,10 +49,16 @@ namespace BlueprintPieces
             SetupWatcher();
         }
 
-        private void OnDestroy()
+        private void Update()
         {
-            Config.Save();
+            if (!Player.m_localPlayer) return;
+            if (!Blueprints.SelectedBlueprint()) return;
+            if (Input.GetKeyDown(_StepUp.Value)) Blueprints.StepUp();
+            if (Input.GetKeyDown(_StepDown.Value)) Blueprints.StepDown();
+            if (Input.GetKeyDown(_ResetStep.Value)) Blueprints.ResetStep();
         }
+
+        private void OnDestroy() => Config.Save();
 
         private void SetupWatcher()
         {
@@ -95,6 +101,10 @@ namespace BlueprintPieces
         public static ConfigEntry<Toggle> _UseGhostMaterial = null!;
         public static ConfigEntry<Toggle> _SlowBuild = null!;
         public static ConfigEntry<float> _SlowBuildRate = null!;
+        public static ConfigEntry<KeyCode> _StepUp = null!;
+        public static ConfigEntry<KeyCode> _StepDown = null!;
+        public static ConfigEntry<float> _StepIncrement = null!;
+        public static ConfigEntry<KeyCode> _ResetStep = null!;
 
         private void InitConfigs()
         {
@@ -109,6 +119,13 @@ namespace BlueprintPieces
             _SlowBuildRate = config("2 - Settings", "Build Rate", 0.5f,
                 new ConfigDescription("Set the build rate of the slow build feature",
                     new AcceptableValueRange<float>(0.1f, 2f)));
+
+            _StepUp = config("2 - Settings", "Step Up", KeyCode.PageUp,
+                "Set the keycode to step up the blueprint in the Y axis for better positioning");
+            _StepDown = config("2 - Settings", "Step Down", KeyCode.PageDown,
+                "Set the keycode to step down the blueprint in the Y axis for better positioning");
+            _StepIncrement = config("2 - Settings", "Step Increment", 0.5f, new ConfigDescription("Set the step increment", new AcceptableValueRange<float>(0.1f, 2f)));
+            _ResetStep = config("2 - Settings", "Reset Steps", KeyCode.Escape, "Set the keycode to reset the steps");
         }
 
         public ConfigEntry<T> config<T>(string group, string name, T value, ConfigDescription description,
