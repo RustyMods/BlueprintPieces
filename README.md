@@ -4,6 +4,8 @@ Plugin reads .blueprint files to generate pieces buildable with the hammer.
 
 It will also, generate a Resource Crate to pair with the blueprint piece, as the plugin generates the required resources to fulfill the blueprint costs and uses that to define the recipe cost for the crate.
 
+![](https://i.imgur.com/WnalzJv.gif)
+
 ## Files
 
 Plugin will create a new directory in your BepinEx/configs folder: <b>BlueprintPieces</b>
@@ -20,12 +22,15 @@ Blueprint file:
 #Description:"Small trader's camp."
 // this entry is ignored
 #Category:MISC
-
+#Terrain
+// Shape;positionX;positionY;positionZ;radius;rotation;smoothRadius;PaintType
+circle;0;-1.271996;0;13;0;3;Paved
+#SnapPoints
+//positionX;positionY;positionZ;Name
+0.1;0;0.1;Center
 #Pieces
-// PrefabName;Category;positionX;positionY;positionZ;RotationX;RotationY;RotationZ;RotationW;Unknown;ScaleX;ScaleY;ScaleZ
+// PrefabName;Category;positionX;positionY;positionZ;RotationX;RotationY;RotationZ;RotationW;Data;ScaleX;ScaleY;ScaleZ
 goblin_pole_small;10;-0.2286987;-1.600498;5.277832;0;0.9951848;0;-0.09801675;"";1;1;1
-goblin_pole_small;10;2.521423;-1.600498;4.425781;0;0.9951848;0;-0.09801675;"";1;1;1
-goblin_woodwall_2m;10;2.141785;-0.1138878;-7.194336;0;0.6343932;0;0.7730106;"";1;1;1
 ```
 
 ## Features
@@ -34,6 +39,8 @@ goblin_woodwall_2m;10;2.141785;-0.1138878;-7.194336;0;0.6343932;0;0.7730106;"";1
 - Ghost Material : Toggle On, Off; to see blueprints with ghost material or normal
 - Step Up/Step Down : More control over placement of blueprint in the Y axis
 - Step Increment
+
+1.0.1 - Now supports terrain modifications and snap point entries
 
 ## Configurations
 
