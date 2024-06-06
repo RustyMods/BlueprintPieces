@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -26,6 +27,7 @@ public static class Blueprints
     private static Blueprint? m_selectedBlueprint;
     
     public static Vector3 m_steps = Vector3.zero;
+    private static GameObject m_terrainObject = null!;
 
     private static bool m_building;
     public static bool IsBuilding() => m_building;
@@ -37,41 +39,102 @@ public static class Blueprints
     public static void PlaceBlueprint(GameObject ghost, Player player)
     {
         if (ghost == null) return;
+        List<PlanPiece> pieces = new();
+        List<TerrainPiece> terrain = new();
+        
+        foreach (Transform child in ghost.transform)
+        {
+            var name = child.name.Replace("(Clone)", string.Empty).Trim();
+            if (name.StartsWith("snappoint")){}
+            else if (name.StartsWith("terrain"))
+            {
+                var data = name.Split('_');
+                var shape = data[1];
+                float radius = float.TryParse(data[2], out float r) ? r : 0f;
+                int rotation = int.TryParse(data[3], out int rot) ? rot : 0;
+                float smooth = float.TryParse(data[4], out float s) ? s : 0f;
+                string paint = data[5];
+                terrain.Add(new TerrainPiece()
+                {
+                    m_shape = shape,
+                    m_position = child.position,
+                    m_radius = radius,
+                    m_rotation = rotation,
+                    m_smooth = smooth,
+                    m_paint = paint
+                });
+            }
+            else
+            {
+                pieces.Add(new PlanPiece()
+                {
+                    m_prefab = name,
+                    m_position = child.position,
+                    m_rotation = child.rotation,
+                    m_scale = child.localScale,
+                });
+            }
+        }
+        
         if (BlueprintPiecesPlugin._SlowBuild.Value is BlueprintPiecesPlugin.Toggle.On)
         {
-            List<PlanPiece> pieces = (from Transform child in ghost.transform select new PlanPiece()
-            {
-                m_prefab = child.name.Replace("(Clone)", string.Empty).Trim(), m_coordinates = child.position, m_rotation = child.rotation,
-            }).ToList();
-
-            BlueprintPiecesPlugin._Plugin.StartCoroutine(StartBuild(player, pieces));
+            BlueprintPiecesPlugin._Plugin.StartCoroutine(StartBuild(player, pieces, terrain));
         }
         else
         {
-            foreach (Transform child in ghost.transform)
-            {
-                GameObject prefab = ZNetScene.instance.GetPrefab(child.name.Replace("(Clone)", string.Empty).Trim());
-                GameObject place = Object.Instantiate(prefab, child.position, child.rotation);
-                if (!place.TryGetComponent(out Piece component)) continue;
-                component.m_creator = player.GetPlayerID();
-                component.m_placeEffect.Create(child.position, child.rotation, place.transform);
-            }
+            BuildTerrain(terrain);
+            BuildObjects(pieces, player);
         }
     }
-    private static IEnumerator StartBuild(Player player, List<PlanPiece> pieces)
+    private static IEnumerator StartBuild(Player player, List<PlanPiece> pieces, List<TerrainPiece> terrainPieces)
     {
         m_building = true;
-        foreach (PlanPiece piece in pieces.OrderBy(x => x.m_coordinates.y))
+
+        BuildTerrain(terrainPieces);
+        
+        foreach (PlanPiece piece in pieces.OrderBy(x => x.m_position.y))
         {
             GameObject prefab = ZNetScene.instance.GetPrefab(piece.m_prefab);
             if (!prefab) continue;
-            GameObject clone = Object.Instantiate(prefab, piece.m_coordinates, piece.m_rotation);
-            if (!clone.TryGetComponent(out Piece component)) continue;
+            GameObject clone = Object.Instantiate(prefab, piece.m_position, piece.m_rotation);
+            clone.transform.localScale = piece.m_scale;
+            if (!clone.TryGetComponent(out Piece component)) yield return new WaitForSeconds(BlueprintPiecesPlugin._SlowBuildRate.Value);
             component.m_creator = player.GetPlayerID();
-            component.m_placeEffect.Create(piece.m_coordinates, piece.m_rotation, clone.transform);
+            component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
             yield return new WaitForSeconds(BlueprintPiecesPlugin._SlowBuildRate.Value);
         }
         m_building = false;
+    }
+
+    private static void BuildTerrain(List<TerrainPiece> terrainPieces)
+    {
+        foreach (var terrain in terrainPieces)
+        {
+            GameObject mod = Object.Instantiate(m_terrainObject, terrain.m_position, Quaternion.identity);
+            if (!mod.TryGetComponent(out TerrainModifier terrainModifier)) continue;
+            terrainModifier.m_square = terrain.m_shape != "circle";
+            terrainModifier.m_levelRadius = terrain.m_radius;
+            terrainModifier.m_smoothRadius = terrain.m_smooth;
+            terrainModifier.m_paintCleared = !terrain.m_paint.IsNullOrWhiteSpace();
+            terrainModifier.m_paintRadius = terrain.m_radius;
+            terrainModifier.m_paintType = Enum.TryParse(terrain.m_paint, out TerrainModifier.PaintType type)
+                ? type
+                : TerrainModifier.PaintType.Dirt;
+        }
+    }
+
+    private static void BuildObjects(List<PlanPiece> pieces, Player player)
+    {
+        foreach (PlanPiece piece in pieces.OrderBy(x => x.m_position.y))
+        {
+            GameObject prefab = ZNetScene.instance.GetPrefab(piece.m_prefab);
+            if (!prefab) continue;
+            GameObject clone = Object.Instantiate(prefab, piece.m_position, piece.m_rotation);
+            clone.transform.localScale = piece.m_scale;
+            if (!clone.TryGetComponent(out Piece component)) continue;
+            component.m_creator = player.GetPlayerID();
+            component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
+        }
     }
     public static void Deselect() => m_selectedBlueprint = null;
 
@@ -83,7 +146,16 @@ public static class Blueprints
             if (!__instance || !ZNetScene.instance) return;
             RegisterBlueprints();
             UpdateServer();
+            CreateBaseTerrainObject();
         }
+    }
+
+    private static void CreateBaseTerrainObject()
+    {
+        m_terrainObject = Object.Instantiate(new GameObject("terrain"), BlueprintPiecesPlugin._Root.transform, false);
+        m_terrainObject.AddComponent<ZNetView>().m_persistent = true;
+        var mod = m_terrainObject.AddComponent<TerrainModifier>();
+        mod.m_smooth = true;
     }
     private static void AddZNetView(GameObject prefab)
     {
@@ -414,6 +486,7 @@ public static class Blueprints
     {
         Blueprint blueprint = new();
         bool isPiece = true;
+        bool isTerrain = false;
         for (int index = 0; index < texts.Length; index++)
         {
             string text = texts[index];
@@ -435,19 +508,22 @@ public static class Blueprints
             }
             else if (text.StartsWith("#Coordinates"))
             {
-                blueprint.m_coordinates = ParseVector3(text) ?? new();
+                blueprint.m_coordinates = ParseVector3(text);
             }
             else if (text.StartsWith("#SnapPoints"))
             {
                 isPiece = false;
+                isTerrain = false;
             }
             else if (text.StartsWith("#Terrain"))
             {
                 isPiece = false;
+                isTerrain = true;
             }
             else if (text.StartsWith("#Pieces"))
             {
                 isPiece = true;
+                isTerrain = false;
             }
             else if (text.StartsWith("#"))
             {
@@ -456,6 +532,11 @@ public static class Blueprints
             {
                 PlanPiece planPiece = ParsePiece(text);
                 blueprint.m_objects.Add(planPiece);
+            }
+            else if (isTerrain)
+            {
+                TerrainPiece terrainPiece = ParseTerrain(text);
+                blueprint.m_terrain.Add(terrainPiece);
             }
             else
             {
@@ -471,34 +552,71 @@ public static class Blueprints
     {
         SnapPoint snapPoint = new();
         string[] data = text.Split(';');
-        if (float.TryParse(data[0], out float x)) return snapPoint;
-        if (float.TryParse(data[1], out float y)) return snapPoint;
-        if (float.TryParse(data[2], out float z)) return snapPoint;
         snapPoint.m_name = $"snappoint_{index}";
-        snapPoint.m_coordinates = new Vector3(x, y, z);
+        snapPoint.m_position = new Vector3(
+            float.TryParse(data[0], out float x) ? x : 0f, 
+            float.TryParse(data[1], out float y) ? y : 0f, 
+            float.TryParse(data[2], out float z) ? z : 0f);
+
+        try
+        {
+            snapPoint.m_name = data[3];
+        }
+        catch
+        {
+            // ignored
+        }
+
         return snapPoint;
     }
+
+    private static TerrainPiece ParseTerrain(string text)
+    {
+        TerrainPiece terrainPiece = new();
+        string[] data = text.Split(';');
+        terrainPiece.m_shape = data[0];
+        terrainPiece.m_position = new Vector3(
+            float.TryParse(data[1], out float x) ? x : 0f,
+            float.TryParse(data[2], out float y) ? y : 0f, 
+            float.TryParse(data[3], out float z) ? z : 0f
+            );
+        terrainPiece.m_radius = float.TryParse(data[4], out float radius) ? radius : 0f;
+        terrainPiece.m_rotation = int.TryParse(data[5], out int rotation) ? rotation : 0;
+        terrainPiece.m_smooth = float.TryParse(data[6], out float smooth) ? smooth : 0f;
+        terrainPiece.m_paint = data[7];
+        return terrainPiece;
+    }
+    
 
     private static PlanPiece ParsePiece(string text)
     {
         PlanPiece planPiece = new();
         string[] data = text.Split(';');
         
-        planPiece.m_category = data[1];
-        string unknown = data[9];
-
         planPiece.m_prefab = data[0];
-        planPiece.m_coordinates = ParsePieceVector3(data[2], data[3], data[4]) ?? new();
-        planPiece.m_rotation = ParsePieceRotation(data[5], data[6], data[7], data[8]) ?? new();
-        planPiece.m_center = $"{data[10]}:{data[11]}:{data[12]}";
+        planPiece.m_category = data[1];
+        planPiece.m_position = ParsePieceVector3(data[2], data[3], data[4]);
+        planPiece.m_rotation = ParsePieceRotation(data[5], data[6], data[7], data[8]);
 
         try
         {
-            planPiece.m_data = data[13];
+            planPiece.m_scale = ParsePieceVector3(data[10], data[11], data[12]);
         }
         catch
         {
-            planPiece.m_data = "";
+            planPiece.m_scale = Vector3.one;
+        }
+        planPiece.m_data = data[9];
+        if (planPiece.m_data.IsNullOrWhiteSpace())
+        {
+            try
+            {
+                planPiece.m_data = data[13];
+            }
+            catch
+            {
+                planPiece.m_data = "";
+            }
         }
         
         return planPiece;
@@ -506,31 +624,32 @@ public static class Blueprints
 
     private static string ParseData(string text) => text.Split(':')[1];
 
-    private static Vector3? ParsePieceVector3(string strX, string strY, string strZ)
+    private static Vector3 ParsePieceVector3(string strX, string strY, string strZ)
     {
-        if (!float.TryParse(strX, out float x)) return null;
-        if (!float.TryParse(strY, out float y)) return null;
-        if (!float.TryParse(strZ, out float z)) return null;
-        return new Vector3(x, y, z);
+        return new Vector3(
+            float.TryParse(strX, out float x) ? x : 0f, 
+            float.TryParse(strY, out float y) ? y : 0f, 
+            float.TryParse(strZ, out float z) ? z : 0f);
     }
 
-    private static Quaternion? ParsePieceRotation(string strX, string strY, string strZ, string strW)
+    private static Quaternion ParsePieceRotation(string strX, string strY, string strZ, string strW)
     {
-        if (!float.TryParse(strX, out float x)) return null;
-        if (!float.TryParse(strY, out float y)) return null;
-        if (!float.TryParse(strZ, out float z)) return null;
-        if (!float.TryParse(strW, out float w)) return null;
-        return new Quaternion(x, y, z, w);
+        return new Quaternion(
+            float.TryParse(strX, out float x) ? x : 0f, 
+            float.TryParse(strY, out float y) ? y : 0f, 
+            float.TryParse(strZ, out float z) ? z : 0f, 
+            float.TryParse(strW, out float w) ? w : 0f
+            );
     }
 
-    private static Vector3? ParseVector3(string text)
+    private static Vector3 ParseVector3(string text)
     {
         var data = text.Split(':')[1];
         string[] values = data.Split(',');
-        if (!float.TryParse(values[0], out float x)) return null;
-        if (!float.TryParse(values[1], out float y)) return null;
-        if (!float.TryParse(values[2], out float z)) return null;
-        return new Vector3(x, y, z);
+        return new Vector3(
+            float.TryParse(values[0], out float x) ? x : 0f, 
+            float.TryParse(values[1], out float y) ? y : 0f, 
+            float.TryParse(values[2], out float z) ? z : 0f);
     }
     
     public class Blueprint
@@ -543,18 +662,29 @@ public static class Blueprints
         public Vector3 m_rotation = new();
         public readonly List<PlanPiece> m_objects = new();
         public readonly List<SnapPoint> m_snapPoints = new();
+        public readonly List<TerrainPiece> m_terrain = new();
         public GameObject m_ghost = new();
         public bool m_registered;
         public void Select() => m_selectedBlueprint = this;
+    }
+
+    public class TerrainPiece
+    {
+        public string m_shape = "circle";
+        public Vector3 m_position = Vector3.zero;
+        public float m_radius = 0f;
+        public int m_rotation = 0;
+        public float m_smooth = 0f;
+        public string m_paint = "";
     }
 
     public class PlanPiece
     {
         public string m_prefab = "";
         public string m_category = "";
-        public Vector3 m_coordinates = Vector3.zero;
+        public Vector3 m_position = Vector3.zero;
         public Quaternion m_rotation = Quaternion.identity;
-        public string m_center = "";
+        public Vector3 m_scale = Vector3.one;
         public string m_data = "";
 
         public ZPackage Deserialize()
@@ -568,7 +698,7 @@ public static class Blueprints
     public class SnapPoint
     {
         public string m_name = "";
-        public Vector3 m_coordinates = new();
+        public Vector3 m_position = new();
     }
 }
 
@@ -582,6 +712,7 @@ public class GhostBlueprint : MonoBehaviour
     {
         SetupGhosts();
     }
+
     private void SetupGhosts()
     {
         if (m_blueprint == null)
@@ -589,12 +720,29 @@ public class GhostBlueprint : MonoBehaviour
             m_blueprint = Blueprints.GetSelectedBlueprint();
             if (m_blueprint == null) return;
         }
+
+        foreach (var terrain in m_blueprint.m_terrain)
+        {
+            Instantiate(new GameObject(
+                $"terrain_{terrain.m_shape}_{terrain.m_radius}_{terrain.m_rotation}_{terrain.m_smooth}_{terrain.m_paint}"), terrain.m_position, 
+                Quaternion.identity, transform);
+        }
+        
         foreach (Blueprints.PlanPiece piece in m_blueprint.m_objects)
         {
             GameObject prefab = ZNetScene.instance.GetPrefab(piece.m_prefab);
             if (!prefab) continue;
-            GameObject ghost = Instantiate(prefab, piece.m_coordinates, piece.m_rotation, transform);
+            GameObject ghost = Instantiate(prefab, piece.m_position, piece.m_rotation, transform);
+            ghost.transform.localScale = piece.m_scale;
             CreateGhostMaterials(ghost);
+        }
+
+        foreach (Blueprints.SnapPoint snapPoint in m_blueprint.m_snapPoints)
+        {
+            GameObject snap = Instantiate(new GameObject(), snapPoint.m_position, Quaternion.identity, transform);
+            snap.name = snapPoint.m_name;
+            snap.layer = LayerMask.NameToLayer("piece");
+            snap.tag = "snappoint";
         }
     }
     private static void CreateGhostMaterials(GameObject prefab)
