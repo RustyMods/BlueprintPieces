@@ -17,7 +17,7 @@ namespace BlueprintPieces
     public class BlueprintPiecesPlugin : BaseUnityPlugin
     {
         internal const string ModName = "BlueprintPieces";
-        internal const string ModVersion = "1.0.1";
+        internal const string ModVersion = "1.0.2";
         internal const string Author = "RustyMods";
         private const string ModGUID = Author + "." + ModName;
         private static string ConfigFileName = ModGUID + ".cfg";
@@ -105,6 +105,8 @@ namespace BlueprintPieces
         public static ConfigEntry<KeyCode> _StepDown = null!;
         public static ConfigEntry<float> _StepIncrement = null!;
         public static ConfigEntry<KeyCode> _ResetStep = null!;
+        public static ConfigEntry<Toggle> _EnablePlaceEffects = null!;
+        public static ConfigEntry<float> _BuildDelay = null!;
 
         private void InitConfigs()
         {
@@ -126,6 +128,10 @@ namespace BlueprintPieces
                 "Set the keycode to step down the blueprint in the Y axis for better positioning");
             _StepIncrement = config("2 - Settings", "Step Increment", 0.5f, new ConfigDescription("Set the step increment", new AcceptableValueRange<float>(0.1f, 2f)));
             _ResetStep = config("2 - Settings", "Reset Steps", KeyCode.Escape, "Set the keycode to reset the steps");
+            _EnablePlaceEffects = config("2 - Settings", "Place Effects", Toggle.On,
+                "If on, a puff of smoke and sound effect appears for each piece built");
+            _BuildDelay = config("2 - Settings", "Build Delay", 1f,
+                new ConfigDescription("Set the delay for when the build starts building piece-by-piece, for slow build", new AcceptableValueRange<float>(0f, 101f)));
         }
 
         public ConfigEntry<T> config<T>(string group, string name, T value, ConfigDescription description,

@@ -27,6 +27,9 @@ public static class PieceTablePatches
     {
         private static void Postfix(Player __instance)
         {
+            GameObject ghost = __instance.m_placementGhost;
+            if (!ghost) return;
+            if (!ghost.GetComponentInChildren<GhostBlueprint>()) return;
             Blueprints.PlaceBlueprint(__instance.m_placementGhost, __instance);
             Blueprints.Deselect();
             Blueprints.ResetStep();

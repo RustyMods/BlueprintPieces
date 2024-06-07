@@ -90,6 +90,8 @@ public static class Blueprints
     {
         m_building = true;
 
+        yield return new WaitForSeconds(BlueprintPiecesPlugin._BuildDelay.Value);
+        
         BuildTerrain(terrainPieces);
         
         foreach (PlanPiece piece in pieces.OrderBy(x => x.m_position.y))
@@ -100,12 +102,14 @@ public static class Blueprints
             clone.transform.localScale = piece.m_scale;
             if (!clone.TryGetComponent(out Piece component)) yield return new WaitForSeconds(BlueprintPiecesPlugin._SlowBuildRate.Value);
             component.m_creator = player.GetPlayerID();
-            component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
+            if (BlueprintPiecesPlugin._EnablePlaceEffects.Value is BlueprintPiecesPlugin.Toggle.On)
+            {
+                component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
+            }
             yield return new WaitForSeconds(BlueprintPiecesPlugin._SlowBuildRate.Value);
         }
         m_building = false;
     }
-
     private static void BuildTerrain(List<TerrainPiece> terrainPieces)
     {
         foreach (var terrain in terrainPieces)
@@ -122,7 +126,6 @@ public static class Blueprints
                 : TerrainModifier.PaintType.Dirt;
         }
     }
-
     private static void BuildObjects(List<PlanPiece> pieces, Player player)
     {
         foreach (PlanPiece piece in pieces.OrderBy(x => x.m_position.y))
@@ -133,7 +136,10 @@ public static class Blueprints
             clone.transform.localScale = piece.m_scale;
             if (!clone.TryGetComponent(out Piece component)) continue;
             component.m_creator = player.GetPlayerID();
-            component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
+            if (BlueprintPiecesPlugin._EnablePlaceEffects.Value is BlueprintPiecesPlugin.Toggle.On)
+            {
+                component.m_placeEffect.Create(piece.m_position, piece.m_rotation, clone.transform);
+            }
         }
     }
     public static void Deselect() => m_selectedBlueprint = null;
@@ -147,6 +153,7 @@ public static class Blueprints
             RegisterBlueprints();
             UpdateServer();
             CreateBaseTerrainObject();
+            // HammerManager.CreateSelectTool();
         }
     }
 
@@ -162,7 +169,7 @@ public static class Blueprints
         ZNetView znv = prefab.AddComponent<ZNetView>();
         znv.m_persistent = false;
     }
-    private static void AddPiece(GameObject prefab, Blueprint blueprint, EffectList placeEffects, 
+    private static Piece AddPiece(GameObject prefab, Blueprint blueprint, EffectList placeEffects, 
         Sprite icon, string name, CraftingStation artisanStation, ZNetScene instance)
     {
         Piece piece = prefab.AddComponent<Piece>();
@@ -203,6 +210,8 @@ public static class Blueprints
         categoryConfig.SettingChanged += (sender, args) => piece.m_category = categoryConfig.Value;
 
         AddRecipe(piece, name, blueprint, artisanStation, instance);
+
+        return piece;
     }
 
     private static void AddRecipe(Piece piece, string name, Blueprint blueprint, CraftingStation artisanStation, ZNetScene instance)
@@ -340,7 +349,7 @@ public static class Blueprints
         }
     }
 
-    private static void GetAssets(ZNetScene instance, out CraftingStation craftingStation, out EffectList placeEffects,
+    public static void GetAssets(ZNetScene instance, out CraftingStation craftingStation, out EffectList placeEffects,
         out PieceTable table, out Sprite icon)
     {
         craftingStation = null!;
@@ -370,18 +379,20 @@ public static class Blueprints
         }
 
         if (blueprint.m_registered) return;
+        CreateGhostBlueprint(blueprint, placeEffects, icon, craftingStation, instance, table);
+    }
+
+    public static Piece CreateGhostBlueprint(Blueprint blueprint, EffectList placeEffects, Sprite icon,
+        CraftingStation craftingStation, ZNetScene instance, PieceTable table)
+    {
         GameObject prefab = Object.Instantiate(new GameObject("mock"), BlueprintPiecesPlugin._Root.transform, false);
         prefab.name = blueprint.m_name;
         string name = blueprint.m_name.Replace("blueprint_", string.Empty);
 
         AddZNetView(prefab);
-            
-        prefab.AddComponent<Transform>();
-            
-        AddPiece(prefab, blueprint, placeEffects, icon, name, craftingStation, instance);
-            
-        blueprint.m_ghost = prefab;
-            
+        
+        Piece piece = AddPiece(prefab, blueprint, placeEffects, icon, name, craftingStation, instance);
+        
         GhostBlueprint ghost = prefab.AddComponent<GhostBlueprint>();
         ghost.m_blueprint = blueprint;
             
@@ -389,6 +400,8 @@ public static class Blueprints
         RegisterToZNetScene(prefab);
 
         blueprint.m_registered = true;
+
+        return piece;
     }
 
     private static void UpdateServer()
@@ -663,7 +676,6 @@ public static class Blueprints
         public readonly List<PlanPiece> m_objects = new();
         public readonly List<SnapPoint> m_snapPoints = new();
         public readonly List<TerrainPiece> m_terrain = new();
-        public GameObject m_ghost = new();
         public bool m_registered;
         public void Select() => m_selectedBlueprint = this;
     }
